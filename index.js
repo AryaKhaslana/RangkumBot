@@ -6,8 +6,46 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Pakai model yang lu bilang udah jalan
+// Pake model Gemini yang lu bilang udah jalan
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); 
+
+// ==========================================
+// FUNGSI SAKTI BUAT MOTONG PESAN PANJANG
+// ==========================================
+async function kirimPesanPanjang(ctx, text) {
+    const MAX_LENGTH = 4000; // Aman dari limit 4096 Telegram
+
+    // Kalau teksnya pendek, langsung gas kirim
+    if (text.length <= MAX_LENGTH) {
+        try {
+            return await ctx.reply(text, { parse_mode: 'Markdown' });
+        } catch (e) {
+            return await ctx.reply(text); // Fallback kalau Markdown rusak
+        }
+    }
+
+    // Kalau panjang, kita potong-potong
+    let sisaTeks = text;
+    while (sisaTeks.length > 0) {
+        let potongan = sisaTeks.slice(0, MAX_LENGTH);
+        
+        // Cari enter terakhir biar gak motong kalimat di tengah-tengah kata
+        if (sisaTeks.length > MAX_LENGTH) {
+            const enterTerakhir = potongan.lastIndexOf('\n');
+            if (enterTerakhir > -1) {
+                potongan = potongan.slice(0, enterTerakhir);
+            }
+        }
+        
+        try {
+            await ctx.reply(potongan, { parse_mode: 'Markdown' });
+        } catch (e) {
+            await ctx.reply(potongan);
+        }
+        
+        sisaTeks = sisaTeks.slice(potongan.length).trim();
+    }
+}
 
 // Aktifin fitur Session (memori bot)
 bot.use(session());
@@ -73,29 +111,27 @@ bot.on('text', async (ctx) => {
         await ctx.reply('Bentar, lagi mikir... 🤔');
 
         if (userMode === 'chat') {
-            // Mode Tanya Sekarep (Bisa nyambung konteks/balas-balasan)
             const chat = model.startChat({ history: ctx.session.history });
             const result = await chat.sendMessage(userText);
             const responseText = result.response.text();
             
-            // Simpan riwayat obrolan ke session
             ctx.session.history.push(
                 { role: "user", parts: [{ text: userText }] },
                 { role: "model", parts: [{ text: responseText }] }
             );
 
-            await ctx.reply(responseText, { parse_mode: 'Markdown' }).catch(() => ctx.reply(responseText));
+            // Pake fungsi pemotong pesan!
+            await kirimPesanPanjang(ctx, responseText);
             
         } else if (userMode === 'utbk') {
-            // Mode UTBK (Bisa lewat teks juga kalau males foto)
             const prompt = `Lu adalah tutor cerdas. Bedah soal berikut dengan detail. Berikan penjelasan konsepnya, langkah penyelesaian, dan jawaban akhirnya: \n\n${userText}`;
             const result = await model.generateContent(prompt);
             const responseText = result.response.text();
             
-            await ctx.reply(responseText, { parse_mode: 'Markdown' }).catch(() => ctx.reply(responseText));
+            // Pake fungsi pemotong pesan!
+            await kirimPesanPanjang(ctx, responseText);
 
         } else {
-            // Kalau lagi di mode foto tapi ngirim teks
             await ctx.reply('Woy, lu kan lagi milih mode Foto/Papan! Kirim gambarnya dong, jangan teks doang 🤣 (Atau ketik "menu" buat ganti mode)');
         }
     } catch (error) {
@@ -110,7 +146,6 @@ bot.on('text', async (ctx) => {
 bot.on('photo', async (ctx) => {
     const userMode = ctx.session.mode;
 
-    // Kalau user milih mode Chat tapi malah ngirim foto
     if (userMode === 'chat') {
         return ctx.reply('Lu lagi di Mode Ngobrol woy! Kalau mau analisis foto, ketik "menu" dan pilih mode yang ada fotonya.');
     }
@@ -132,7 +167,6 @@ bot.on('photo', async (ctx) => {
 
         let prompt = '';
 
-        // Tentukan sistem prompt berdasarkan mode yang lagi aktif
         if (userMode === 'papan') {
             prompt = 'Lu adalah asisten belajar. Baca tulisan di papan tulis ini, perbaiki kalimat yang terpotong, dan buatkan rangkuman terstruktur. Pisahkan konsep utama, rumus, dan kesimpulan menggunakan Markdown.';
         } else if (userMode === 'foto') {
@@ -144,13 +178,8 @@ bot.on('photo', async (ctx) => {
         const result = await model.generateContent([prompt, imagePart]);
         const summary = result.response.text();
         
-        // Trik Fallback biar nggak kena error entity Markdown Telegram
-        try {
-            await ctx.reply(summary, { parse_mode: 'Markdown' });
-        } catch (e) {
-            console.log("Fallback ke raw text");
-            await ctx.reply(summary); 
-        }
+        // Pake fungsi pemotong pesan biar anti error Telegram!
+        await kirimPesanPanjang(ctx, summary);
 
     } catch (error) {
         console.error(error);
